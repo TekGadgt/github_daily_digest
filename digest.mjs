@@ -1,4 +1,6 @@
-// digest.mjs — Fetches last 24h of GitHub activity and posts to Discord
+// digest.mjs — Fetches GitHub activity and posts to Discord
+// Strategy: Events API for the index (active repos, PRs, issues, releases)
+//           Commits API for actual commit data per repo
 
 const USERNAME = process.env.GITHUB_USERNAME;
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
@@ -11,7 +13,13 @@ if (!USERNAME || !WEBHOOK_URL) {
 const LOOKBACK_DAYS = parseInt(process.env.LOOKBACK_DAYS || "1", 10);
 const SINCE = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
 
-// Event types worth reporting — skip stars, forks, watches
+const GITHUB_HEADERS = {
+  Accept: "application/vnd.github.v3+json",
+  "User-Agent": "github-discord-digest",
+};
+
+// --- Step 1: Events API for the activity index ---
+
 const TRACKED_TYPES = new Set([
   "PushEvent",
   "PullRequestEvent",
@@ -19,25 +27,17 @@ const TRACKED_TYPES = new Set([
   "CreateEvent",
   "DeleteEvent",
   "ReleaseEvent",
-  "IssueCommentEvent",
-  "PullRequestReviewEvent",
 ]);
-
-const GITHUB_HEADERS = {
-  Accept: "application/vnd.github.v3+json",
-  "User-Agent": "github-discord-digest",
-};
 
 async function fetchEvents() {
   const events = [];
-  // GitHub Events API returns max 10 pages of 30
   for (let page = 1; page <= 10; page++) {
     const res = await fetch(
       `https://api.github.com/users/${USERNAME}/events?per_page=100&page=${page}`,
       { headers: GITHUB_HEADERS }
     );
     if (!res.ok) {
-      console.error(`GitHub API error: ${res.status}`);
+      console.error(`GitHub Events API error: ${res.status}`);
       break;
     }
     const page_events = await res.json();
@@ -50,6 +50,35 @@ async function fetchEvents() {
   }
   return events;
 }
+
+// --- Step 2: Commits API for real commit data ---
+
+async function fetchCommits(repoFullName) {
+  const commits = [];
+  try {
+    for (let page = 1; page <= 5; page++) {
+      const url = `https://api.github.com/repos/${repoFullName}/commits?author=${USERNAME}&since=${SINCE.toISOString()}&per_page=100&page=${page}`;
+      const res = await fetch(url, { headers: GITHUB_HEADERS });
+      if (!res.ok) {
+        console.warn(`Commits API error for ${repoFullName}: ${res.status}`);
+        break;
+      }
+      const page_commits = await res.json();
+      if (page_commits.length === 0) break;
+
+      for (const c of page_commits) {
+        const msg = (c.commit?.message || "").split("\n")[0].slice(0, 72);
+        const sha = c.sha?.slice(0, 7) || "";
+        commits.push({ msg, sha });
+      }
+    }
+  } catch (err) {
+    console.warn(`Failed to fetch commits for ${repoFullName}: ${err.message}`);
+  }
+  return commits;
+}
+
+// --- Step 3: Process events + enrich with commits ---
 
 async function fetchTitle(repoFullName, type, number) {
   try {
@@ -66,34 +95,28 @@ async function fetchTitle(repoFullName, type, number) {
   }
 }
 
-async function formatEvents(events) {
-  const pushes = {};   // repo -> commits[]
+async function buildDigest(events) {
+  const pushRepos = new Set();
   const prs = [];
   const issues = [];
   const other = [];
 
   for (const e of events) {
-    const repo = e.repo.name.replace(`${USERNAME}/`, "");
+    const repoShort = e.repo.name.replace(`${USERNAME}/`, "");
 
     try {
       switch (e.type) {
-        case "PushEvent": {
-          const commits = e.payload.commits || [];
-          if (commits.length === 0) break;
-          if (!pushes[repo]) pushes[repo] = [];
-          for (const c of commits) {
-            const msg = (c.message || "").split("\n")[0].slice(0, 72);
-            pushes[repo].push(msg);
-          }
+        case "PushEvent":
+          pushRepos.add(e.repo.name);
           break;
-        }
+
         case "PullRequestEvent": {
           const pr = e.payload?.pull_request;
           if (!pr) break;
           let title = pr.title;
           if (!title) title = await fetchTitle(e.repo.name, "pr", pr.number);
           prs.push(
-            `\`${repo}\` — ${e.payload.action} PR #${pr.number}: ${(title || "untitled").slice(0, 60)}`
+            `\`${repoShort}\` — ${e.payload.action} PR #${pr.number}: ${(title || "untitled").slice(0, 60)}`
           );
           break;
         }
@@ -103,16 +126,16 @@ async function formatEvents(events) {
           let title = issue.title;
           if (!title) title = await fetchTitle(e.repo.name, "issue", issue.number);
           issues.push(
-            `\`${repo}\` — ${e.payload.action} #${issue.number}: ${(title || "untitled").slice(0, 60)}`
+            `\`${repoShort}\` — ${e.payload.action} #${issue.number}: ${(title || "untitled").slice(0, 60)}`
           );
           break;
         }
         case "CreateEvent": {
           if (e.payload.ref_type === "repository") {
-            other.push(`Created new repo \`${repo}\``);
+            other.push(`Created new repo \`${repoShort}\``);
           } else {
             other.push(
-              `\`${repo}\` — created ${e.payload.ref_type} \`${e.payload.ref}\``
+              `\`${repoShort}\` — created ${e.payload.ref_type} \`${e.payload.ref}\``
             );
           }
           break;
@@ -120,21 +143,31 @@ async function formatEvents(events) {
         case "ReleaseEvent": {
           const rel = e.payload?.release;
           if (!rel) break;
-          other.push(`\`${repo}\` — released ${rel.tag_name}: ${rel.name || ""}`);
+          other.push(`\`${repoShort}\` — released ${rel.tag_name}: ${rel.name || ""}`);
           break;
         }
-        default:
-          break;
       }
     } catch (err) {
-      console.warn(`Skipping event ${e.type} in ${repo}: ${err.message}`);
+      console.warn(`Skipping event ${e.type} in ${repoShort}: ${err.message}`);
+    }
+  }
+
+  // Fetch real commits for each repo that had push activity
+  const pushes = {};
+  for (const repoFullName of pushRepos) {
+    const repoShort = repoFullName.replace(`${USERNAME}/`, "");
+    const commits = await fetchCommits(repoFullName);
+    if (commits.length > 0) {
+      pushes[repoShort] = commits;
     }
   }
 
   return { pushes, prs, issues, other };
 }
 
-function buildEmbed(events, formatted) {
+// --- Step 4: Build Discord embed ---
+
+function buildEmbed(events, digest) {
   const repos = new Set(events.map((e) => e.repo.name));
   const today = new Date().toLocaleDateString("en-US", {
     month: "long",
@@ -144,52 +177,53 @@ function buildEmbed(events, formatted) {
 
   const fields = [];
 
-  // Pushes section
-  const pushEntries = Object.entries(formatted.pushes);
-  if (pushEntries.length > 0) {
-    for (const [repo, commits] of pushEntries) {
-      const unique = [...new Set(commits)];
-      let value = "";
-      for (const msg of unique) {
-        const line = `> • ${msg}\n`;
-        // Discord field value limit is 1024 chars
-        if (value.length + line.length > 1000) {
-          value += `> _...and ${unique.length - value.split("\n").filter(Boolean).length} more_\n`;
-          break;
-        }
-        value += line;
+  // Commits per repo
+  for (const [repo, commits] of Object.entries(digest.pushes)) {
+    // Dedupe by sha
+    const seen = new Set();
+    const unique = commits.filter((c) => {
+      if (seen.has(c.sha)) return false;
+      seen.add(c.sha);
+      return true;
+    });
+
+    let value = "";
+    for (const { msg, sha } of unique) {
+      const line = `> \`${sha}\` ${msg}\n`;
+      if (value.length + line.length > 1000) {
+        const shown = value.split("\n").filter(Boolean).length;
+        value += `> _...and ${unique.length - shown} more_\n`;
+        break;
       }
-      fields.push({
-        name: `🟢 \`${repo}\` — ${unique.length} commit${unique.length === 1 ? "" : "s"}`,
-        value: value.trim(),
-        inline: false,
-      });
+      value += line;
     }
+    fields.push({
+      name: `🟢 \`${repo}\` — ${unique.length} commit${unique.length === 1 ? "" : "s"}`,
+      value: value.trim(),
+      inline: false,
+    });
   }
 
-  // PRs
-  if (formatted.prs.length > 0) {
+  if (digest.prs.length > 0) {
     fields.push({
       name: "🟣 Pull requests",
-      value: formatted.prs.join("\n"),
+      value: digest.prs.join("\n"),
       inline: false,
     });
   }
 
-  // Issues
-  if (formatted.issues.length > 0) {
+  if (digest.issues.length > 0) {
     fields.push({
       name: "🟡 Issues",
-      value: formatted.issues.join("\n"),
+      value: digest.issues.join("\n"),
       inline: false,
     });
   }
 
-  // Other
-  if (formatted.other.length > 0) {
+  if (digest.other.length > 0) {
     fields.push({
       name: "📦 Other",
-      value: formatted.other.join("\n"),
+      value: digest.other.join("\n"),
       inline: false,
     });
   }
@@ -201,14 +235,14 @@ function buildEmbed(events, formatted) {
         description: `${events.length} event${events.length === 1 ? "" : "s"} across ${repos.size} repo${repos.size === 1 ? "" : "s"}`,
         color: 0x5865f2,
         fields,
-        footer: {
-          text: "via GitHub Events API",
-        },
+        footer: { text: "via GitHub API" },
         timestamp: new Date().toISOString(),
       },
     ],
   };
 }
+
+// --- Step 5: Post to Discord ---
 
 async function postToDiscord(payload) {
   const res = await fetch(WEBHOOK_URL, {
@@ -228,12 +262,12 @@ async function main() {
   const events = await fetchEvents();
 
   if (events.length === 0) {
-    console.log("No activity in the last 24h. Skipping post.");
+    console.log(`No activity in the last ${LOOKBACK_DAYS} day(s). Skipping post.`);
     return;
   }
 
-  const formatted = await formatEvents(events);
-  const payload = buildEmbed(events, formatted);
+  const digest = await buildDigest(events);
+  const payload = buildEmbed(events, digest);
   await postToDiscord(payload);
 }
 
