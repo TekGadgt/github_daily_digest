@@ -23,18 +23,18 @@ const TRACKED_TYPES = new Set([
   "PullRequestReviewEvent",
 ]);
 
+const GITHUB_HEADERS = {
+  Accept: "application/vnd.github.v3+json",
+  "User-Agent": "github-discord-digest",
+};
+
 async function fetchEvents() {
   const events = [];
   // GitHub Events API returns max 10 pages of 30
-  for (let page = 1; page <= 3; page++) {
+  for (let page = 1; page <= 10; page++) {
     const res = await fetch(
       `https://api.github.com/users/${USERNAME}/events?per_page=100&page=${page}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "github-discord-digest",
-        },
-      }
+      { headers: GITHUB_HEADERS }
     );
     if (!res.ok) {
       console.error(`GitHub API error: ${res.status}`);
@@ -51,7 +51,22 @@ async function fetchEvents() {
   return events;
 }
 
-function formatEvents(events) {
+async function fetchTitle(repoFullName, type, number) {
+  try {
+    const endpoint = type === "pr" ? "pulls" : "issues";
+    const res = await fetch(
+      `https://api.github.com/repos/${repoFullName}/${endpoint}/${number}`,
+      { headers: GITHUB_HEADERS }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.title || null;
+  } catch {
+    return null;
+  }
+}
+
+async function formatEvents(events) {
   const pushes = {};   // repo -> commits[]
   const prs = [];
   const issues = [];
@@ -75,18 +90,20 @@ function formatEvents(events) {
         case "PullRequestEvent": {
           const pr = e.payload?.pull_request;
           if (!pr) break;
-          const title = pr.title || "untitled";
+          let title = pr.title;
+          if (!title) title = await fetchTitle(e.repo.name, "pr", pr.number);
           prs.push(
-            `\`${repo}\` — ${e.payload.action} PR #${pr.number}: ${title.slice(0, 60)}`
+            `\`${repo}\` — ${e.payload.action} PR #${pr.number}: ${(title || "untitled").slice(0, 60)}`
           );
           break;
         }
         case "IssuesEvent": {
           const issue = e.payload?.issue;
           if (!issue) break;
-          const title = issue.title || "untitled";
+          let title = issue.title;
+          if (!title) title = await fetchTitle(e.repo.name, "issue", issue.number);
           issues.push(
-            `\`${repo}\` — ${e.payload.action} #${issue.number}: ${title.slice(0, 60)}`
+            `\`${repo}\` — ${e.payload.action} #${issue.number}: ${(title || "untitled").slice(0, 60)}`
           );
           break;
         }
@@ -130,18 +147,24 @@ function buildEmbed(events, formatted) {
   // Pushes section
   const pushEntries = Object.entries(formatted.pushes);
   if (pushEntries.length > 0) {
-    let value = "";
     for (const [repo, commits] of pushEntries) {
       const unique = [...new Set(commits)];
-      value += `\`${repo}\` — ${unique.length} commit${unique.length === 1 ? "" : "s"}\n`;
-      for (const msg of unique.slice(0, 5)) {
-        value += `> • ${msg}\n`;
+      let value = "";
+      for (const msg of unique) {
+        const line = `> • ${msg}\n`;
+        // Discord field value limit is 1024 chars
+        if (value.length + line.length > 1000) {
+          value += `> _...and ${unique.length - value.split("\n").filter(Boolean).length} more_\n`;
+          break;
+        }
+        value += line;
       }
-      if (unique.length > 5) {
-        value += `> _...and ${unique.length - 5} more_\n`;
-      }
+      fields.push({
+        name: `🟢 \`${repo}\` — ${unique.length} commit${unique.length === 1 ? "" : "s"}`,
+        value: value.trim(),
+        inline: false,
+      });
     }
-    fields.push({ name: "🟢 Pushes", value: value.trim(), inline: false });
   }
 
   // PRs
@@ -209,7 +232,7 @@ async function main() {
     return;
   }
 
-  const formatted = formatEvents(events);
+  const formatted = await formatEvents(events);
   const payload = buildEmbed(events, formatted);
   await postToDiscord(payload);
 }
