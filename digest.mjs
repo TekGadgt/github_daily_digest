@@ -60,50 +60,57 @@ function formatEvents(events) {
   for (const e of events) {
     const repo = e.repo.name.replace(`${USERNAME}/`, "");
 
-    switch (e.type) {
-      case "PushEvent": {
-        const commits = e.payload.commits || [];
-        if (commits.length === 0) break;
-        if (!pushes[repo]) pushes[repo] = [];
-        for (const c of commits) {
-          const msg = c.message.split("\n")[0].slice(0, 72);
-          pushes[repo].push(msg);
+    try {
+      switch (e.type) {
+        case "PushEvent": {
+          const commits = e.payload.commits || [];
+          if (commits.length === 0) break;
+          if (!pushes[repo]) pushes[repo] = [];
+          for (const c of commits) {
+            const msg = (c.message || "").split("\n")[0].slice(0, 72);
+            pushes[repo].push(msg);
+          }
+          break;
         }
-        break;
-      }
-      case "PullRequestEvent": {
-        const pr = e.payload.pull_request;
-        if (!pr) break;
-        prs.push(
-          `\`${repo}\` — ${e.payload.action} PR #${pr.number}: ${pr.title.slice(0, 60)}`
-        );
-        break;
-      }
-      case "IssuesEvent": {
-        const issue = e.payload.issue;
-        if (!issue) break;
-        issues.push(
-          `\`${repo}\` — ${e.payload.action} #${issue.number}: ${issue.title.slice(0, 60)}`
-        );
-        break;
-      }
-      case "CreateEvent": {
-        if (e.payload.ref_type === "repository") {
-          other.push(`Created new repo \`${repo}\``);
-        } else {
-          other.push(
-            `\`${repo}\` — created ${e.payload.ref_type} \`${e.payload.ref}\``
+        case "PullRequestEvent": {
+          const pr = e.payload?.pull_request;
+          if (!pr) break;
+          const title = pr.title || "untitled";
+          prs.push(
+            `\`${repo}\` — ${e.payload.action} PR #${pr.number}: ${title.slice(0, 60)}`
           );
+          break;
         }
-        break;
+        case "IssuesEvent": {
+          const issue = e.payload?.issue;
+          if (!issue) break;
+          const title = issue.title || "untitled";
+          issues.push(
+            `\`${repo}\` — ${e.payload.action} #${issue.number}: ${title.slice(0, 60)}`
+          );
+          break;
+        }
+        case "CreateEvent": {
+          if (e.payload.ref_type === "repository") {
+            other.push(`Created new repo \`${repo}\``);
+          } else {
+            other.push(
+              `\`${repo}\` — created ${e.payload.ref_type} \`${e.payload.ref}\``
+            );
+          }
+          break;
+        }
+        case "ReleaseEvent": {
+          const rel = e.payload?.release;
+          if (!rel) break;
+          other.push(`\`${repo}\` — released ${rel.tag_name}: ${rel.name || ""}`);
+          break;
+        }
+        default:
+          break;
       }
-      case "ReleaseEvent": {
-        const rel = e.payload.release;
-        other.push(`\`${repo}\` — released ${rel.tag_name}: ${rel.name || ""}`);
-        break;
-      }
-      default:
-        break;
+    } catch (err) {
+      console.warn(`Skipping event ${e.type} in ${repo}: ${err.message}`);
     }
   }
 
