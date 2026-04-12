@@ -1,0 +1,21 @@
+name: Daily GitHub Digest
+
+on:
+  schedule:
+    # Runs at 9:00 AM ET (13:00 UTC) every day
+    - cron: '0 13 * * *'
+  workflow_dispatch: # Manual trigger for testing
+
+jobs:
+  post-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Post digest to Discord
+        run: node digest.mjs
+        env:
+          GITHUB_USERNAME: TekGadgt
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
