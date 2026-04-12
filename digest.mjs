@@ -73,6 +73,7 @@ function formatEvents(events) {
       }
       case "PullRequestEvent": {
         const pr = e.payload.pull_request;
+        if (!pr) break;
         prs.push(
           `\`${repo}\` — ${e.payload.action} PR #${pr.number}: ${pr.title.slice(0, 60)}`
         );
@@ -80,6 +81,7 @@ function formatEvents(events) {
       }
       case "IssuesEvent": {
         const issue = e.payload.issue;
+        if (!issue) break;
         issues.push(
           `\`${repo}\` — ${e.payload.action} #${issue.number}: ${issue.title.slice(0, 60)}`
         );
