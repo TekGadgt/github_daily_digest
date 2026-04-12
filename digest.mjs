@@ -61,8 +61,10 @@ function formatEvents(events) {
 
     switch (e.type) {
       case "PushEvent": {
+        const commits = e.payload.commits || [];
+        if (commits.length === 0) break;
         if (!pushes[repo]) pushes[repo] = [];
-        for (const c of e.payload.commits || []) {
+        for (const c of commits) {
           const msg = c.message.split("\n")[0].slice(0, 72);
           pushes[repo].push(msg);
         }
