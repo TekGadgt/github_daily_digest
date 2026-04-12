@@ -8,7 +8,8 @@ if (!USERNAME || !WEBHOOK_URL) {
   process.exit(1);
 }
 
-const SINCE = new Date(Date.now() - 24 * 60 * 60 * 1000);
+const LOOKBACK_DAYS = parseInt(process.env.LOOKBACK_DAYS || "1", 10);
+const SINCE = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
 
 // Event types worth reporting — skip stars, forks, watches
 const TRACKED_TYPES = new Set([

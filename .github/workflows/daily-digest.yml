@@ -4,7 +4,12 @@ on:
   schedule:
     # Runs at 9:00 AM ET (13:00 UTC) every day
     - cron: '0 13 * * *'
-  workflow_dispatch: # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: 'Number of days to look back (default: 1)'
+        required: false
+        default: '1'
 
 jobs:
   post-digest:
@@ -19,3 +24,4 @@ jobs:
         env:
           GITHUB_USERNAME: TekGadgt
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '1' }}
