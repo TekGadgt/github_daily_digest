@@ -173,6 +173,7 @@ function buildEmbed(events, digest) {
     month: "long",
     day: "numeric",
     year: "numeric",
+    timeZone: "America/New_York",
   });
 
   const fields = [];
