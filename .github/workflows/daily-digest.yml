@@ -19,10 +19,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Post digest to Discord
+      - name: Post digest
         run: node digest.mjs
         env:
           GITHUB_USERNAME: TekGadgt
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}        # optional — private repo support
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '1' }}
